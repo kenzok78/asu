@@ -29,10 +29,11 @@ jobs:
 
     - name: Build and publish
       run: |
-        poetry build
-        poetry publish \
+        poetry config repositories.testpypi https://test.pypi.org/legacy/
+        poetry publish --build \
           --username  ${{ secrets.PYPI_USERNAME }} \
-          --password ${{ secrets.PYPI_PASSWORD }}
+          --password ${{ secrets.PYPI_PASSWORD }} \
+          --repository testpypi
 
     - name: Login to DockerHub
       uses: docker/login-action@v1
