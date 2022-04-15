@@ -1,21 +1,122 @@
+import pytest
+
+
 def test_api_version(client, app):
     response = client.get("/api/branches")
     assert response.status == "200 OK"
 
 
-def test_api_build(client):
+def test_api_build(client, upstream):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtarget",
             profile="testprofile",
             packages=["test1", "test2"],
         ),
     )
-    assert response.status == "202 ACCEPTED"
-    assert response.json.get("detail") == "queued"
-    assert response.json.get("request_hash") == "e360f833a1914b2f82844fa6d33f0d7f"
+    assert response.status == "200 OK"
+    assert response.json.get("request_hash") == "33377fbd91c50c4236343f1dfd67f9ae"
+
+
+def test_api_build_filesystem_ext4(app, upstream):
+    client = app.test_client()
+    response = client.post(
+        "/api/v1/build",
+        json=dict(
+            version="TESTVERSION",
+            target="testtarget/testsubtarget",
+            profile="testprofile",
+            packages=["test1", "test2"],
+            filesystem="ext4",
+        ),
+    )
+    assert response.status == "200 OK"
+    assert response.json.get("request_hash") == "daae6bc8045962aa86c8e9d885dae499"
+
+    config = (
+        app.config["CACHE_PATH"] / "cache/TESTVERSION/testtarget/testsubtarget/.config"
+    ).read_text()
+    assert "# CONFIG_TARGET_ROOTFS_SQUASHFS is not set" in config
+    assert "CONFIG_TARGET_ROOTFS_EXT4FS=y" in config
+
+
+def test_api_build_filesystem_squashfs(app, upstream):
+    client = app.test_client()
+    response = client.post(
+        "/api/v1/build",
+        json=dict(
+            version="TESTVERSION",
+            target="testtarget/testsubtarget",
+            profile="testprofile",
+            packages=["test1", "test2"],
+            filesystem="squashfs",
+        ),
+    )
+    assert response.status == "200 OK"
+    assert response.json.get("request_hash") == "40cc1368f667923f3414914a2ccecc89"
+    config = (
+        app.config["CACHE_PATH"] / "cache/TESTVERSION/testtarget/testsubtarget/.config"
+    ).read_text()
+    assert "# CONFIG_TARGET_ROOTFS_EXT4FS is not set" in config
+    assert "CONFIG_TARGET_ROOTFS_SQUASHFS=y" in config
+
+
+def test_api_build_filesystem_reset(app, upstream):
+    client = app.test_client()
+    response = client.post(
+        "/api/v1/build",
+        json=dict(
+            version="TESTVERSION",
+            target="testtarget/testsubtarget",
+            profile="testprofile",
+            packages=["test1", "test2"],
+            filesystem="ext4",
+        ),
+    )
+    assert response.status == "200 OK"
+    assert response.json.get("request_hash") == "daae6bc8045962aa86c8e9d885dae499"
+    assert (
+        "# CONFIG_TARGET_ROOTFS_SQUASHFS is not set"
+        in (
+            app.config["CACHE_PATH"]
+            / "cache/TESTVERSION/testtarget/testsubtarget/.config"
+        ).read_text()
+    )
+
+    response = client.post(
+        "/api/v1/build",
+        json=dict(
+            version="TESTVERSION",
+            target="testtarget/testsubtarget",
+            profile="testprofile",
+            packages=["test1", "test2"],
+        ),
+    )
+    assert response.status == "200 OK"
+    assert response.json.get("request_hash") == "33377fbd91c50c4236343f1dfd67f9ae"
+    assert (
+        "# CONFIG_TARGET_ROOTFS_SQUASHFS is not set"
+        not in (
+            app.config["CACHE_PATH"]
+            / "cache/TESTVERSION/testtarget/testsubtarget/.config"
+        ).read_text()
+    )
+
+
+def test_api_build_filesystem_bad(client, upstream):
+    response = client.post(
+        "/api/v1/build",
+        json=dict(
+            version="TESTVERSION",
+            target="testtarget/testsubtarget",
+            profile="testprofile",
+            packages=["test1", "test2"],
+            filesystem="bad",
+        ),
+    )
+    assert response.status == "400 BAD REQUEST"
 
 
 def test_api_latest_default(client):
@@ -23,41 +124,39 @@ def test_api_latest_default(client):
     assert response.status == "302 FOUND"
 
 
-def test_api_build_mapping(client):
+def test_api_build_mapping(client, upstream):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtarget",
             profile="testvendor,testprofile",
             packages=["test1", "test2"],
         ),
     )
-    assert response.status == "202 ACCEPTED"
-    assert response.json.get("detail") == "queued"
-    assert response.json.get("request_hash") == "19bb42f198c975cfbaf8a2ec241b7580"
+    assert response.status == "200 OK"
+    assert response.json.get("request_hash") == "515560ee99aced26b9a1176b69a62894"
 
 
-def test_api_build_mapping_abi(client):
+def test_api_build_mapping_abi(client, upstream):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtarget",
             profile="testvendor,testprofile",
             packages=["test1-1", "test2"],
         ),
     )
-    assert response.status == "202 ACCEPTED"
-    assert response.json.get("detail") == "queued"
-    assert response.json.get("request_hash") == "7d099fb07fb35a55de091ad2a148fca5"
+    assert response.status == "200 OK"
+    assert response.json.get("request_hash") == "0c445af0015c2a83e1eea189ae0c4936"
 
 
 def test_api_build_bad_target(client):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtargetbad",
             profile="testvendor,testprofile",
             packages=["test1", "test2"],
@@ -69,52 +168,50 @@ def test_api_build_bad_target(client):
     )
 
 
-def test_api_build_get(client):
+def test_api_build_get(client, upstream):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtarget",
             profile="testprofile",
             packages=["test1", "test2"],
         ),
     )
-    assert response.json["request_hash"] == "e360f833a1914b2f82844fa6d33f0d7f"
-    response = client.get("/api/v1/build/e360f833a1914b2f82844fa6d33f0d7f")
-    assert response.status == "202 ACCEPTED"
-    assert response.json.get("detail") == "queued"
-    assert response.json.get("request_hash") == "e360f833a1914b2f82844fa6d33f0d7f"
+    assert response.json["request_hash"] == "33377fbd91c50c4236343f1dfd67f9ae"
+    response = client.get("/api/v1/build/33377fbd91c50c4236343f1dfd67f9ae")
+    assert response.status == "200 OK"
+    assert response.json.get("request_hash") == "33377fbd91c50c4236343f1dfd67f9ae"
 
 
-def test_api_build_packages_versions(client):
+def test_api_build_packages_versions(client, upstream):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtarget",
             profile="testprofile",
             packages_versions={"test1": "1.0", "test2": "2.0"},
         ),
     )
-    assert response.json["request_hash"] == "552b9e328888629e83649256497f981d"
-    response = client.get("/api/v1/build/552b9e328888629e83649256497f981d")
-    assert response.status == "202 ACCEPTED"
-    assert response.json.get("detail") == "queued"
-    assert response.json.get("request_hash") == "552b9e328888629e83649256497f981d"
+    assert response.json["request_hash"] == "2a80a9af3453d2d19dd3b7c7e5058426"
+    response = client.get("/api/v1/build/2a80a9af3453d2d19dd3b7c7e5058426")
+    assert response.status == "200 OK"
+    assert response.json.get("request_hash") == "2a80a9af3453d2d19dd3b7c7e5058426"
 
 
-def test_api_build_packages_duplicate(client):
+def test_api_build_packages_duplicate(client, upstream):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtarget",
             profile="testprofile",
             packages=["test1", "test2"],
             packages_versions={"test1": "1.0", "test2": "2.0"},
         ),
     )
-    assert response.status == "202 ACCEPTED"
+    assert response.status == "200 OK"
 
 
 def test_api_build_get_not_found(client):
@@ -127,33 +224,31 @@ def test_api_build_get_no_post(client):
     assert response.status == "405 METHOD NOT ALLOWED"
 
 
-def test_api_build_empty_packages_list(client):
+def test_api_build_empty_packages_list(client, upstream):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtarget",
             profile="testprofile",
             packages=[],
         ),
     )
-    assert response.status == "202 ACCEPTED"
-    assert response.json.get("detail") == "queued"
-    assert response.json.get("request_hash") == "66cb932c37a4a2d1b012db4eb5286cf0"
+    assert response.status == "200 OK"
+    assert response.json.get("request_hash") == "fd1286d75a476f071feae75505f95fe8"
 
 
-def test_api_build_withouth_packages_list(client):
+def test_api_build_withouth_packages_list(client, upstream):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtarget",
             profile="testprofile",
         ),
     )
-    assert response.status == "202 ACCEPTED"
-    assert response.json.get("detail") == "queued"
-    assert response.json.get("request_hash") == "66cb932c37a4a2d1b012db4eb5286cf0"
+    assert response.status == "200 OK"
+    assert response.json.get("request_hash") == "fd1286d75a476f071feae75505f95fe8"
 
 
 def test_api_build_prerelease_snapshot(client):
@@ -184,11 +279,11 @@ def test_api_build_prerelease_rc(client):
     assert response.json.get("detail") == "Unsupported profile: testprofile"
 
 
-def test_api_build_bad_packages_str(client):
+def test_api_build_bad_packages_str(client, upstream):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtarget",
             profile="testprofile",
             packages="testpackage",
@@ -207,19 +302,68 @@ def test_api_build_empty_request(client):
     assert response.json.get("detail") == "None is not of type 'object'"
 
 
-def test_api_build_x86(client):
+@pytest.mark.slow
+def test_api_build_real_x86(app):
+    client = app.test_client()
+    app.config["UPSTREAM_URL"] = "https://downloads.openwrt.org"
     response = client.post(
         "/api/v1/build",
         json=dict(
             target="x86/64",
             version="SNAPSHOT",
+            packages=["tmux", "vim"],
             profile="some_random_cpu_which_doesnt_exists_as_profile",
         ),
     )
 
-    assert response.status == "202 ACCEPTED"
-    assert response.json.get("detail") == "queued"
-    assert response.json.get("request_hash") == "1fda145d439f33b0e8e671115bd0bd66"
+    assert response.status == "200 OK"
+    assert response.json.get("id") == "generic"
+
+    response = client.post(
+        "/api/v1/build",
+        json=dict(
+            target="x86/64",
+            version="SNAPSHOT",
+            packages=["tmux", "vim"],
+            profile="some_random_cpu_which_doesnt_exists_as_profile",
+            filesystem="ext4",
+        ),
+    )
+
+    assert response.status == "200 OK"
+    assert response.json.get("id") == "generic"
+
+
+@pytest.mark.slow
+def test_api_build_real_ath79(app):
+    client = app.test_client()
+    app.config["UPSTREAM_URL"] = "https://downloads.openwrt.org"
+    response = client.post(
+        "/api/v1/build",
+        json=dict(
+            target="ath79/generic",
+            version="SNAPSHOT",
+            packages=["tmux", "vim"],
+            profile="tplink_tl-wdr4300-v1",
+        ),
+    )
+
+    assert response.status == "200 OK"
+    assert response.json.get("id") == "tplink_tl-wdr4300-v1"
+
+    response = client.post(
+        "/api/v1/build",
+        json=dict(
+            target="ath79/generic",
+            version="SNAPSHOT",
+            packages=["tmux", "vim"],
+            profile="tplink_tl-wdr4300-v1",
+            filesystem="squashfs",
+        ),
+    )
+
+    assert response.status == "200 OK"
+    assert response.json.get("id") == "tplink_tl-wdr4300-v1"
 
 
 def test_api_build_needed(client):
@@ -232,13 +376,13 @@ def test_api_build_needed(client):
     assert response.json.get("title") == "Bad Request"
     response = client.post(
         "/api/v1/build",
-        json=dict(version="SNAPSHOT", target="testtarget/testsubtarget"),
+        json=dict(version="TESTVERSION", target="testtarget/testsubtarget"),
     )
     assert response.status == "400 BAD REQUEST"
     assert response.json.get("detail") == "'profile' is a required property"
     assert response.json.get("title") == "Bad Request"
     response = client.post(
-        "/api/v1/build", json=dict(version="SNAPSHOT", profile="testprofile")
+        "/api/v1/build", json=dict(version="TESTVERSION", profile="testprofile")
     )
     assert response.status == "400 BAD REQUEST"
     assert response.json.get("detail") == "'target' is a required property"
@@ -251,7 +395,7 @@ def test_api_build_bad_distro(client):
         json=dict(
             distro="Foobar",
             target="testtarget/testsubtarget",
-            version="SNAPSHOT",
+            version="TESTVERSION",
             profile="testprofile",
             packages=["test1", "test2"],
         ),
@@ -292,7 +436,7 @@ def test_api_build_bad_profile(client):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtarget",
             profile="Foobar",
             packages=["test1", "test2"],
@@ -306,7 +450,7 @@ def test_api_build_bad_packages(client):
     response = client.post(
         "/api/v1/build",
         json=dict(
-            version="SNAPSHOT",
+            version="TESTVERSION",
             target="testtarget/testsubtarget",
             profile="testprofile",
             packages=["test4"],

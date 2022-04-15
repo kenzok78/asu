@@ -296,7 +296,7 @@ def update_target_profiles(branch: dict, version: str, target: str):
                 rmtree(current_app.config["STORE_PATH"] / request_hash)
 
             except NoSuchJobError:
-                current_app.logger.warning(f"Job was already deleted")
+                current_app.logger.warning("Job was already deleted")
         r.delete(f"build-{version_code}-{target}")
 
     r.set(
@@ -354,7 +354,9 @@ def update(interval):
     current_app.logger.info("Init ASU janitor")
     while True:
         if not current_app.config["BRANCHES"]:
-            current_app.logger.error("No BRANCHES defined in config, nothing to do, exiting")
+            current_app.logger.error(
+                "No BRANCHES defined in config, nothing to do, exiting"
+            )
             return
         for branch in current_app.config["BRANCHES"].values():
             if not branch.get("enabled"):

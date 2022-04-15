@@ -5,7 +5,6 @@ import struct
 from pathlib import Path
 
 import nacl.signing
-import redis
 import requests
 from flask import current_app
 
@@ -108,6 +107,7 @@ def get_request_hash(req: dict) -> str:
         get_packages_hash(req.get("packages", "")),
         get_manifest_hash(req.get("packages_versions", {})),
         str(req.get("diff_packages", False)),
+        req.get("filesystem", ""),
     ]
 
     if "defaults" in req:
@@ -172,19 +172,3 @@ def verify_usign(sig_file: Path, msg_file: Path, pub_key: str) -> bool:
         return True
     except nacl.exceptions.CryptoError:
         return False
-
-
-def stats_versions():
-    return [
-        (int(s), p.decode("utf-8"))
-        for p, s in get_redis().zrevrange(f"stats-versions", 0, -1, withscores=True)
-    ]
-
-
-def stats_profiles(branch):
-    return [
-        (int(s), p.decode("utf-8"))
-        for p, s in get_redis().zrevrange(
-            f"stats-profiles-{branch}", 0, -1, withscores=True
-        )
-    ]

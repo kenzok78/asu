@@ -2,66 +2,22 @@ import json
 import logging
 import re
 import subprocess
-import urllib.request
+from datetime import datetime
 from pathlib import Path
-from shutil import rmtree
+from shutil import copyfile, rmtree
 
+import requests
 from rq import get_current_job
 
 from .common import (
     fingerprint_pubkey_usign,
     get_file_hash,
     get_packages_hash,
-    get_str_hash,
     verify_usign,
 )
 
 log = logging.getLogger("rq.worker")
 log.setLevel(logging.DEBUG)
-
-
-class PackageSelectionError(Exception):
-    pass
-
-
-class ImageBuilderVersionError(Exception):
-    pass
-
-
-class ImageBuildError(Exception):
-    pass
-
-
-class JSONMissingError(Exception):
-    pass
-
-
-class JSONMissingProfileError(Exception):
-    pass
-
-
-class StorePathMissingError(Exception):
-    pass
-
-
-class ChecksumMissingError(Exception):
-    pass
-
-
-class BadChecksumError(Exception):
-    pass
-
-
-class BadSignatureError(Exception):
-    pass
-
-
-class ExtractArchiveError(Exception):
-    pass
-
-
-class TooManyPackages(Exception):
-    pass
 
 
 def build(req: dict):
@@ -73,13 +29,23 @@ def build(req: dict):
         request (dict): Contains all properties of requested image
     """
 
+    def report_error(msg):
+        log.warning(f"Error: {msg}")
+        job.meta["detail"] = f"Error: {msg}"
+        job.save_meta()
+        raise
+
     if not req["store_path"].is_dir():
-        raise StorePathMissingError()
+        report_error("Store path missing")
 
     job = get_current_job()
+    job.meta["detail"] = "init"
+    job.save_meta()
 
     log.debug(f"Building {req}")
-    cache = (Path.cwd() / "cache" / req["version"] / req["target"]).parent
+    cache = (
+        req.get("cache_path", Path.cwd()) / "cache" / req["version"] / req["target"]
+    ).parent
     target, subtarget = req["target"].split("/")
     sums_file = Path(cache / f"{subtarget}_sums")
     sig_file = Path(cache / f"{subtarget}_sums.sig")
@@ -98,8 +64,10 @@ def build(req: dict):
         download_file("sha256sums.sig", sig_file)
         download_file("sha256sums", sums_file)
 
+        log.debug("Signatures downloaded" + sig_file.read_text())
+
         if not verify_usign(sig_file, sums_file, req["branch_data"]["pubkey"]):
-            raise BadSignatureError()
+            report_error("Bad signature of ImageBuilder archive")
 
         ib_search = re.search(
             r"^(.{64}) \*(openwrt-imagebuilder-.+?\.Linux-x86_64\.tar\.xz)$",
@@ -108,24 +76,22 @@ def build(req: dict):
         )
 
         if not ib_search:
-            raise ChecksumMissingError()
+            report_error("Missing Checksum")
 
         ib_hash, ib_archive = ib_search.groups()
 
-        if job:
-            job.meta["imagebuilder_status"] = "download_imagebuilder"
-            job.save_meta()
+        job.meta["imagebuilder_status"] = "download_imagebuilder"
+        job.save_meta()
 
         download_file(ib_archive)
 
         if ib_hash != get_file_hash(cache / ib_archive):
-            raise BadChecksumError()
+            report_error("Bad Checksum")
 
         (cache / subtarget).mkdir(parents=True, exist_ok=True)
 
-        if job:
-            job.meta["imagebuilder_status"] = "unpack_imagebuilder"
-            job.save_meta()
+        job.meta["imagebuilder_status"] = "unpack_imagebuilder"
+        job.save_meta()
 
         extract_archive = subprocess.run(
             ["tar", "--strip-components=1", "-xf", ib_archive, "-C", subtarget],
@@ -133,7 +99,7 @@ def build(req: dict):
         )
 
         if extract_archive.returncode:
-            raise ExtractArchiveError()
+            report_error("Failed to unpack ImageBuilder archive")
 
         log.debug(f"Extracted TAR {ib_archive}")
 
@@ -148,11 +114,6 @@ def build(req: dict):
         repos_path = cache / subtarget / "repositories.conf"
         repos = repos_path.read_text()
 
-        # speed up downloads with HTTP and (optionally) CDN
-        repos = repos.replace("https://downloads.openwrt.org", req["upstream_url"])
-        repos = repos.replace("http://downloads.openwrt.org", req["upstream_url"])
-        repos = repos.replace("https", "http")
-
         extra_repos = req["branch_data"].get("extra_repos")
         if extra_repos:
             log.debug("Found extra repos")
@@ -161,6 +122,9 @@ def build(req: dict):
 
         repos_path.write_text(repos)
         log.debug(f"Repos:\n{repos}")
+
+        # backup original configuration to keep default filesystems
+        copyfile(cache / subtarget / ".config", cache / subtarget / ".config.orig")
 
         if (Path.cwd() / "seckey").exists():
             # link key-build to imagebuilder
@@ -183,32 +147,34 @@ def build(req: dict):
                         cache folder
         """
         log.debug(f"Downloading {filename}")
-        urllib.request.urlretrieve(
+        r = requests.get(
             req["upstream_url"]
             + "/"
             + req["branch_data"]["path"].format(version=req["version"])
             + "/targets/"
             + req["target"]
             + "/"
-            + filename,
-            dest or (cache / filename),
+            + filename
         )
+
+        with open(dest or (cache / filename), "wb") as f:
+            f.write(r.content)
 
     cache.mkdir(parents=True, exist_ok=True)
 
     stamp_file = cache / f"{subtarget}_stamp"
 
-    sig_file_headers = urllib.request.urlopen(
+    sig_file_headers = requests.head(
         req["upstream_url"]
         + "/"
         + req["branch_data"]["path"].format(version=req["version"])
         + "/targets/"
         + req["target"]
         + "/sha256sums.sig"
-    ).info()
+    ).headers
     log.debug(f"sig_file_headers: \n{sig_file_headers}")
 
-    origin_modified = sig_file_headers.get("Last-Modified")
+    origin_modified = sig_file_headers.get("last-modified")
     log.info("Origin %s", origin_modified)
 
     if stamp_file.is_file():
@@ -231,36 +197,36 @@ def build(req: dict):
 
     if "version_code" in req:
         if version_code != req.get("version_code"):
-            raise ImageBuilderVersionError(
-                f"requested {req['version_code']} vs got {version_code}"
+            report_error(
+                f"Received inncorrect version {version_code} (requested {req['version_code']})"
             )
 
+    default_packages = set(
+        re.search(r"Default Packages: (.*)\n", info_run.stdout).group(1).split()
+    )
+    profile_packages = set(
+        re.search(
+            r"{}:\n    .+\n    Packages: (.*?)\n".format(req["profile"]),
+            info_run.stdout,
+            re.MULTILINE,
+        )
+        .group(1)
+        .split()
+    )
+
     if req.get("diff_packages", False):
-        default_packages = set(
-            re.search(r"Default Packages: (.*)\n", info_run.stdout).group(1).split()
-        )
-        profile_packages = set(
-            re.search(
-                r"{}:\n    .+\n    Packages: (.*?)\n".format(req["profile"]),
-                info_run.stdout,
-                re.MULTILINE,
-            )
-            .group(1)
-            .split()
-        )
         remove_packages = (default_packages | profile_packages) - req["packages"]
         req["packages"] = req["packages"] | set(map(lambda p: f"-{p}", remove_packages))
 
-    if job:
-        job.meta["imagebuilder_status"] = "calculate_packages_hash"
-        job.save_meta()
+    job.meta["imagebuilder_status"] = "calculate_packages_hash"
+    job.save_meta()
 
     manifest_run = subprocess.run(
         [
             "make",
             "manifest",
             f"PROFILE={req['profile']}",
-            f"PACKAGES={' '.join(req.get('packages', ''))}",
+            f"PACKAGES={' '.join(sorted(req.get('packages', [])))}",
             "STRIP_ABI=1",
         ],
         text=True,
@@ -273,20 +239,18 @@ def build(req: dict):
             rmtree(cache / subtarget)
             return build(req)
         else:
-            if job:
-                job.meta["stdout"] = manifest_run.stdout
-                job.meta["stderr"] = manifest_run.stderr
-                job.save_meta()
-            raise PackageSelectionError()
+            job.meta["stdout"] = manifest_run.stdout
+            job.meta["stderr"] = manifest_run.stderr
+            report_error("Impossible package selection")
 
     manifest = dict(map(lambda pv: pv.split(" - "), manifest_run.stdout.splitlines()))
 
     for package, version in req.get("packages_versions", {}).items():
         if package not in manifest:
-            raise PackageSelectionError(f"{package} not in manifest")
+            report_error(f"Impossible package selection: {package} not in manifest")
         if version != manifest[package]:
-            raise PackageSelectionError(
-                f"{package} version not as requested: {version} vs. {manifest[package]}"
+            report_error(
+                f"Impossible package selection: {package} version not as requested: {version} vs. {manifest[package]}"
             )
 
     manifest_packages = manifest.keys()
@@ -300,18 +264,45 @@ def build(req: dict):
 
     (req["store_path"] / bin_dir).mkdir(parents=True, exist_ok=True)
 
+    log.debug("Created store path: %s", req["store_path"] / bin_dir)
+
+    if "filesystem" in req:
+        config_path = cache / subtarget / ".config"
+        config = config_path.read_text()
+
+        for filesystem in ["squashfs", "ext4fs", "ubifs", "jffs2"]:
+            # this implementation uses `startswith` since a running device thinks
+            # it's running `ext4` while really there is `ext4fs` running
+            if not filesystem.startswith(req.get("filesystem", filesystem)):
+                log.debug(f"Disable {filesystem}")
+                config = config.replace(
+                    f"CONFIG_TARGET_ROOTFS_{filesystem.upper()}=y",
+                    f"# CONFIG_TARGET_ROOTFS_{filesystem.upper()} is not set",
+                )
+            else:
+                log.debug(f"Enable {filesystem}")
+                config = config.replace(
+                    f"# CONFIG_TARGET_ROOTFS_{filesystem.upper()} is not set",
+                    f"CONFIG_TARGET_ROOTFS_{filesystem.upper()}=y",
+                )
+
+        config_path.write_text(config)
+    else:
+        copyfile(cache / subtarget / ".config.orig", cache / subtarget / ".config")
+
     build_cmd = [
         "make",
         "image",
         f"PROFILE={req['profile']}",
-        f"PACKAGES={' '.join(req['packages'])}",
+        f"PACKAGES={' '.join(sorted(req.get('packages', [])))}",
         f"EXTRA_IMAGE_NAME={packages_hash}",
         f"BIN_DIR={req['store_path'] / bin_dir}",
     ]
 
-    if job:
-        job.meta["imagebuilder_status"] = "building_image"
-        job.save_meta()
+    log.debug("Build command: %s", build_cmd)
+
+    job.meta["imagebuilder_status"] = "building_image"
+    job.save_meta()
 
     if req.get("defaults"):
         defaults_file = (
@@ -330,67 +321,52 @@ def build(req: dict):
         capture_output=True,
     )
 
-    # check if running as job or within pytest
-    if job:
-        job.meta["stdout"] = image_build.stdout
-        job.meta["stderr"] = image_build.stderr
-        job.meta["build_cmd"] = build_cmd
-        job.save_meta()
+    job.meta["stdout"] = image_build.stdout
+    job.meta["stderr"] = image_build.stderr
+    job.meta["build_cmd"] = build_cmd
+    job.save_meta()
 
     if image_build.returncode:
-        raise ImageBuildError()
+        report_error("Error while building firmware. See stdout/stderr")
 
     if "is too big" in image_build.stderr:
-        raise TooManyPackages()
+        report_error("Selected packages exceed device storage")
 
     json_file = Path(req["store_path"] / bin_dir / "profiles.json")
 
     if not json_file.is_file():
-        raise JSONMissingError()
+        report_error("No JSON file found")
 
     json_content = json.loads(json_file.read_text())
 
     if req["profile"] not in json_content["profiles"]:
-        raise JSONMissingProfileError()
+        report_error("Profile not found in JSON file")
 
     json_content.update({"manifest": manifest})
     json_content.update(json_content["profiles"][req["profile"]])
     json_content["id"] = req["profile"]
     json_content["bin_dir"] = str(bin_dir)
     json_content.pop("profiles")
+    json_content["build_at"] = datetime.utcfromtimestamp(
+        int(json_content.get("source_date_epoch", 0))
+    ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    json_content["detail"] = "done"
 
-    if job:
-        job.connection.sadd(
-            f"builds-{version_code}-{req['target']}", req["request_hash"]
-        )
+    job.connection.sadd(f"builds-{version_code}-{req['target']}", req["request_hash"])
 
-        for package in manifest.keys():
-            job.connection.zadd(
-                f"stats-packages-{req['branch_data']['name']}",
-                {package: 1},
-                incr=True,
-            )
+    job.connection.hincrby(
+        "stats-builds",
+        "#".join(
+            [req["branch_data"]["name"], req["version"], req["target"], req["profile"]]
+        ),
+    )
 
-        job.connection.zadd(
-            f"stats-profiles-{req['branch_data']['name']}",
-            {req["profile"]: 1},
-            incr=True,
-        )
+    extra_packages = set(req.get("packages", [])) - (
+        default_packages | profile_packages
+    )
+    for package in extra_packages:
+        job.connection.hincrby("stats-packages", package)
 
-        job.connection.zadd(
-            f"stats-targets-{req['branch_data']['name']}",
-            {req["target"]: 1},
-            incr=True,
-        )
-
-        job.connection.zadd(
-            "stats-versions",
-            {req["version"]: 1},
-            incr=True,
-        )
-
-        job.connection.incr("stats-images")
-        if req.get("defaults"):
-            job.connection.incr("stats-images-custom")
+    log.debug("JSON content %s", json_content)
 
     return json_content
