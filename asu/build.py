@@ -352,20 +352,14 @@ def build(req: dict):
     ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     json_content["detail"] = "done"
 
-    job.connection.sadd(f"builds-{version_code}-{req['target']}", req["request_hash"])
+    job.connection.sadd(f"builds:{version_code}:{req['target']}", req["request_hash"])
 
     job.connection.hincrby(
-        "stats-builds",
+        "stats:builds",
         "#".join(
             [req["branch_data"]["name"], req["version"], req["target"], req["profile"]]
         ),
     )
-
-    extra_packages = set(req.get("packages", [])) - (
-        default_packages | profile_packages
-    )
-    for package in extra_packages:
-        job.connection.hincrby("stats-packages", package)
 
     log.debug("JSON content %s", json_content)
 
