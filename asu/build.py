@@ -182,6 +182,7 @@ def build(req: dict):
     if origin_modified != local_modified:
         log.debug("New ImageBuilder upstream available")
         setup_ib()
+        stamp_file.write_text(origin_modified)
 
     if not (cache_workdir / ".config.orig").exists():
         # backup original configuration to keep default filesystems
@@ -189,8 +190,6 @@ def build(req: dict):
             cache_workdir / ".config",
             cache_workdir / ".config.orig",
         )
-
-    stamp_file.write_text(origin_modified)
 
     info_run = subprocess.run(
         ["make", "info"], text=True, capture_output=True, cwd=cache_workdir
@@ -399,9 +398,8 @@ def build(req: dict):
             )
             if (cache / target_subtarget).exists():
                 rmtree(cache / target_subtarget)
-                _, subtarget = target_subtarget.split("/")
                 for suffix in [".stamp", ".sha256sums", ".sha256sums.sig"]:
-                    (cache / subtarget).with_suffix(suffix).unlink()
+                    (cache / target_subtarget).with_suffix(suffix).unlink(missing_ok=True)
         else:
             log.debug("Keeping ImageBuilder for %s", target_subtarget)
 
