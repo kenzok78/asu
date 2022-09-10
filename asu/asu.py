@@ -3,9 +3,11 @@ from pathlib import Path
 
 import connexion
 from flask import Flask, render_template, send_from_directory
+from pkg_resources import resource_filename
 from prometheus_client import CollectorRegistry, make_wsgi_app
 from redis import Redis
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
+from yaml import safe_load
 
 import asu.common
 from asu import __version__
@@ -34,7 +36,6 @@ def create_app(test_config: dict = None) -> Flask:
         TESTING=False,
         DEBUG=False,
         UPSTREAM_URL="https://downloads.openwrt.org",
-        BRANCHES={},
         ALLOW_DEFAULTS=False,
         ASYNC_QUEUE=True,
     )
@@ -56,6 +57,13 @@ def create_app(test_config: dict = None) -> Flask:
         if option.endswith("_PATH") and isinstance(value, (Path, str)):
             app.config[option] = Path(value)
             app.config[option].mkdir(parents=True, exist_ok=True)
+
+    if not "BRANCHES" in app.config:
+        if "BRANCHES_FILE" not in app.config:
+            app.config["BRANCHES_FILE"] = resource_filename(__name__, "branches.yml")
+
+        with open(app.config["BRANCHES_FILE"], "r") as branches:
+            app.config["BRANCHES"] = safe_load(branches)["branches"]
 
     app.wsgi_app = DispatcherMiddleware(
         app.wsgi_app, {"/metrics": make_wsgi_app(app.config["REGISTRY"])}
